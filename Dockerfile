@@ -1,8 +1,9 @@
+FROM pennlinc/xcp_d:0.1.3 as build_fsl
 FROM ubuntu:bionic-20220531
 
 COPY docker/files/neurodebian.gpg /usr/local/etc/neurodebian.gpg
 
-# Prepare environment
+# Install basic libraries
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         apt-utils \
@@ -11,6 +12,7 @@ RUN apt-get update && \
         bzip2 \
         ca-certificates \
         curl \
+        dc \
         git \
         graphviz \
         libtool \
@@ -37,12 +39,12 @@ RUN echo "Downloading C3D ..." \
 ENV C3DPATH=/opt/c3d/bin \
     PATH=/opt/c3d/bin:$PATH
 
+# Set up NeuroDebian
 RUN curl -sSL "http://neuro.debian.net/lists/$( lsb_release -c | cut -f2 ).us-ca.full" >> /etc/apt/sources.list.d/neurodebian.sources.list && \
     apt-key add /usr/local/etc/neurodebian.gpg && \
     (apt-key adv --refresh-keys --keyserver hkp://ha.pool.sks-keyservers.net 0xA5D32F012649A5A9 || true)
 
-
-# Install and setting up miniconda
+# Install and set up miniconda
 RUN curl -sSLO https://repo.continuum.io/miniconda/Miniconda3-py38_4.9.2-Linux-x86_64.sh && \
     bash Miniconda3-py38_4.9.2-Linux-x86_64.sh -b -p /usr/local/miniconda && \
     rm Miniconda3-py38_4.9.2-Linux-x86_64.sh
@@ -63,7 +65,6 @@ RUN conda install -y \
         mkl-service=2.3 \
         numpy=1.18.1 \
         pandas=1.2 \
-        pip=21.0 \
         scikit-learn=0.24 \
         scipy=1.6 \
         traits=6.2 \
@@ -75,6 +76,7 @@ RUN conda install -y \
     conda clean -tipsy; sync && \
     rm -rf ~/.conda ~/.cache/pip/*; sync
 
+# Install AFNI, Connectome Workbench, and git-annex
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive \
     apt-get install -y --no-install-recommends \
@@ -82,6 +84,26 @@ RUN apt-get update && \
         connectome-workbench=1.5.0-1~nd18.04+1 \
         git-annex-standalone && \
     apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+# Install SLICER from FSL
+COPY --from=build_fsl /usr/lib/fsl/5.0/slicer /opt/fsl/lib/slicer
+COPY --from=build_fsl /usr/lib/fsl/5.0/slicesdir /opt/fsl/lib/slicesdir
+COPY --from=build_fsl /usr/lib/fsl/5.0/pngappend /opt/fsl/lib/pngappend
+COPY --from=build_fsl /usr/lib/fsl/5.0/remove_ext /opt/fsl/lib/remove_ext
+COPY --from=build_fsl /usr/bin/fsl5.0-slicer /opt/fsl/bin/fsl-5.0-slicer
+COPY --from=build_fsl /usr/bin/fsl5.0-slicesdir /opt/fsl/bin/fsl5.0-slicesdir
+COPY --from=build_fsl /usr/bin/fsl5.0-pngappend /opt/fsl/bin/fsl5.0-pngappend
+COPY --from=build_fsl /usr/bin/fsl5.0-remove_ext /opt/fsl/bin/fsl5.0-remove_ext
+ENV FSLDIR="/opt/fsl/lib" \
+    FSLOUTPUTTYPE="NIFTI_GZ" \
+    FSLMULTIFILEQUIT="TRUE" \
+    FSLLOCKDIR="" \
+    FSLMACHINELIST="" \
+    FSLREMOTECALL="" \
+    FSLGECUDAQ="cuda.q" \
+    LD_LIBRARY_PATH="/opt/fsl/lib:$LD_LIBRARY_PATH" \
+    PATH="/opt/fsl:$PATH" \
+    FSL_DEPS="libquadmath0"
 
 # Install FreeSurfer
 RUN curl -sSL https://surfer.nmr.mgh.harvard.edu/pub/dist/freesurfer/6.0.1/freesurfer-Linux-centos6_x86_64-stable-pub-v6.0.1.tar.gz | tar zxv --no-same-owner -C /opt \
@@ -105,14 +127,16 @@ RUN curl -sSL https://surfer.nmr.mgh.harvard.edu/pub/dist/freesurfer/6.0.1/frees
     --exclude='freesurfer/trctrain'
 
 ENV FREESURFER_HOME="/opt/freesurfer" \
-    FSF_OUTPUT_FORMAT="nii.gz" \
-    FUNCTIONALS_DIR="$FREESURFER_HOME/sessions" \
+    FSF_OUTPUT_FORMAT="nii.gz"
+
+ENV FUNCTIONALS_DIR="$FREESURFER_HOME/sessions" \
     LOCAL_DIR="$FREESURFER_HOME/local" \
     MINC_BIN_DIR="$FREESURFER_HOME/mni/bin" \
     MINC_LIB_DIR="$FREESURFER_HOME/mni/lib" \
     MNI_DIR="$FREESURFER_HOME/mni" \
-    MNI_DATAPATH="$FREESURFER_HOME/mni/data" \
-    MNI_PERL5LIB="$MINC_LIB_DIR/perl5/5.8.5" \
+    MNI_DATAPATH="$FREESURFER_HOME/mni/data"
+
+ENV MNI_PERL5LIB="$MINC_LIB_DIR/perl5/5.8.5" \
     PERL5LIB="$MINC_LIB_DIR/perl5/5.8.5" \
     SUBJECTS_DIR="$FREESURFER_HOME/subjects" \
     PATH="$FREESURFER_HOME/bin:$FREESURFER_HOME/tktools:$MINC_BIN_DIR:$PATH"
@@ -147,6 +171,9 @@ ENV MKL_NUM_THREADS=1 \
 RUN useradd -m -s /bin/bash -G users xcp_d
 WORKDIR /home/xcp_d
 ENV HOME="/home/xcp_d"
+
+# Update pip, which AFNI installs (probably)
+RUN pip install --no-cache-dir --upgrade pip
 
 # Precaching fonts, set 'Agg' as default backend for matplotlib
 RUN python -c "from matplotlib import font_manager" && \
